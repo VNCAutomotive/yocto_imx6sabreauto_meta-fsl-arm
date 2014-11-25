@@ -1,0 +1,60 @@
+From a5f6abc880e85fce1140f869d54e4fca0216b286 Mon Sep 17 00:00:00 2001
+From: Rajkumar Manoharan <rmanohar@qti.qualcomm.com>
+Date: Wed, 14 May 2014 14:39:21 +0530
+Subject: [PATCH] ath9k_htc: Stop ANI before doing hw_reset
+
+During remain on channel request, ANI worker thread is not stopped
+before doing hw reset. This is causing kernel crash in
+hw_per_calibration. This change ensures that ANI is stopped before
+doing chip reset and it will be rescheduled later when the chip is
+configured back to home channel and having valid bss.
+
+Reported-by: David Herrmann <dh.herrmann@gmail.com>
+Tested-by: David Herrmann <dh.herrmann@gmail.com>
+Signed-off-by: Rajkumar Manoharan <rmanohar@qti.qualcomm.com>
+Signed-off-by: John W. Linville <linville@tuxdriver.com>
+(see commit faf1dc64e345ac4de5c4429df6ed492255ae2248)
+---
+ drivers/net/wireless/ath/ath9k/htc_drv_main.c | 5 ++++-
+ init/main.c                                   | 1 +
+ 2 files changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/net/wireless/ath/ath9k/htc_drv_main.c b/drivers/net/wireless/ath/ath9k/htc_drv_main.c
+index 62f1b76..3ff8cbe 100644
+--- a/drivers/net/wireless/ath/ath9k/htc_drv_main.c
++++ b/drivers/net/wireless/ath/ath9k/htc_drv_main.c
+@@ -113,8 +113,10 @@ static void ath9k_htc_vif_iter(void *data, u8 *mac, struct ieee80211_vif *vif)
+ 	struct ath9k_htc_priv *priv = data;
+ 	struct ieee80211_bss_conf *bss_conf = &vif->bss_conf;
+ 
+-	if ((vif->type == NL80211_IFTYPE_AP) && bss_conf->enable_beacon)
++	if ((vif->type == NL80211_IFTYPE_AP) && bss_conf->enable_beacon) {
+ 		priv->reconfig_beacon = true;
++		priv->rearm_ani = true;
++	}
+ 
+ 	if (bss_conf->assoc) {
+ 		priv->rearm_ani = true;
+@@ -264,6 +266,7 @@ static int ath9k_htc_set_channel(struct ath9k_htc_priv *priv,
+ 
+ 	ath9k_htc_ps_wakeup(priv);
+ 
++	ath9k_htc_stop_ani(priv);
+ 	del_timer_sync(&priv->tx.cleanup_timer);
+ 	ath9k_htc_tx_drain(priv);
+ 
+diff --git a/init/main.c b/init/main.c
+index e83ac04..7d32778 100644
+--- a/init/main.c
++++ b/init/main.c
+@@ -510,6 +510,7 @@ asmlinkage void __init start_kernel(void)
+ 	build_all_zonelists(NULL, NULL);
+ 	page_alloc_init();
+ 
++	pr_notice("RealVNC(TM) Modified Yocto Kernel (rev 1)\n");
+ 	pr_notice("Kernel command line: %s\n", boot_command_line);
+ 	parse_early_param();
+ 	parse_args("Booting kernel", static_command_line, __start___param,
+-- 
+1.9.1
+
