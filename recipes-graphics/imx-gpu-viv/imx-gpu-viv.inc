@@ -170,6 +170,9 @@ do_install () {
     ln -sf libGLESv2.so.2.0.0 ${D}${libdir}/libGLESv2.so.2
     ln -sf libGLESv2.so.2.0.0 ${D}${libdir}/libGLESv2.so
 
+    # update libg2d.so as backend dependent
+    ln -sf libg2d.so.1.0 ${D}${libdir}/libg2d.so.0.8
+
     # skip packaging wayland libraries if no support is requested
     if [ "${HAS_WL}" = "no" ]; then
         rm ${D}${libdir}/libgc_wayland_protocol.*
