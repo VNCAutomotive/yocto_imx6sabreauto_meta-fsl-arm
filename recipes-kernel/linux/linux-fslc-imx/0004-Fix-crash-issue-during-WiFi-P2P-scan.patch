@@ -1,0 +1,285 @@
+From 8a71a255968cdcf16e621b1252afe08ad336b37a Mon Sep 17 00:00:00 2001
+From: Yun Jiang <Yun.Jiang@realvnc.com>
+Date: Fri, 4 Nov 2016 12:27:33 +0000
+Subject: [PATCH 4/5] Fix crash issue during WiFi P2P scan.
+
+---
+ drivers/net/wireless/ath/ath6kl/cfg80211.c | 45 +++++++++++++----
+ drivers/net/wireless/ath/ath6kl/wmi.c      | 80 +++++++++++++++++++++++-------
+ 2 files changed, 97 insertions(+), 28 deletions(-)
+
+diff --git a/drivers/net/wireless/ath/ath6kl/cfg80211.c b/drivers/net/wireless/ath/ath6kl/cfg80211.c
+index f60fc32..c72bbca 100644
+--- a/drivers/net/wireless/ath/ath6kl/cfg80211.c
++++ b/drivers/net/wireless/ath/ath6kl/cfg80211.c
+@@ -858,9 +858,15 @@ void ath6kl_cfg80211_disconnect_event(struct ath6kl_vif *vif, u8 reason,
+ {
+ 	struct ath6kl *ar = vif->ar;
+ 
+-	if (vif->scan_req) {
+-		cfg80211_scan_done(vif->scan_req, true);
+-		vif->scan_req = NULL;
++	struct cfg80211_scan_request *scan_req;
++
++	spin_lock_bh(&vif->if_lock);
++	scan_req = vif->scan_req;
++	vif->scan_req = NULL;
++	spin_unlock_bh(&vif->if_lock);
++
++	if (scan_req) {
++		cfg80211_scan_done(scan_req, true);
+ 	}
+ 
+ 	if (vif->nw_type & ADHOC_NETWORK) {
+@@ -1047,7 +1053,9 @@ static int ath6kl_cfg80211_scan(struct wiphy *wiphy,
+ 	if (test_bit(CONNECTED, &vif->flags))
+ 		force_fg_scan = 1;
+ 
++	spin_lock_bh(&vif->if_lock);
+ 	vif->scan_req = request;
++	spin_unlock_bh(&vif->if_lock);
+ 
+ 	ret = ath6kl_wmi_beginscan_cmd(ar->wmi, vif->fw_vif_idx,
+ 				       WMI_LONG_SCAN, force_fg_scan,
+@@ -1058,7 +1066,9 @@ static int ath6kl_cfg80211_scan(struct wiphy *wiphy,
+ 				       request->rates);
+ 	if (ret) {
+ 		ath6kl_err("failed to start scan: %d\n", ret);
++		spin_lock_bh(&vif->if_lock);
+ 		vif->scan_req = NULL;
++		spin_unlock_bh(&vif->if_lock);
+ 	}
+ 
+ 	kfree(channels);
+@@ -1069,19 +1079,28 @@ static int ath6kl_cfg80211_scan(struct wiphy *wiphy,
+ void ath6kl_cfg80211_scan_complete_event(struct ath6kl_vif *vif, bool aborted)
+ {
+ 	struct ath6kl *ar = vif->ar;
++	struct cfg80211_scan_request *request = NULL;
+ 	int i;
+ 
+ 	ath6kl_dbg(ATH6KL_DBG_WLAN_CFG, "%s: status%s\n", __func__,
+ 		   aborted ? " aborted" : "");
+ 
+-	if (!vif->scan_req)
++	spin_lock_bh(&vif->if_lock);
++	if (!vif->scan_req) {
++		spin_unlock_bh(&vif->if_lock);
+ 		return;
++	}
++
++	request = vif->scan_req;
++	vif->scan_req = NULL;
++	spin_unlock_bh(&vif->if_lock);
+ 
+ 	if (aborted)
+ 		goto out;
+ 
+-	if (vif->scan_req->n_ssids && vif->scan_req->ssids[0].ssid_len) {
+-		for (i = 0; i < vif->scan_req->n_ssids; i++) {
++	if (request->n_ssids && request->ssids &&
++	    request->ssids[0].ssid_len) {
++		for (i = 0; i < request->n_ssids; i++) {
+ 			ath6kl_wmi_probedssid_cmd(ar->wmi, vif->fw_vif_idx,
+ 						  i + 1, DISABLE_SSID_FLAG,
+ 						  0, NULL);
+@@ -1089,8 +1108,7 @@ void ath6kl_cfg80211_scan_complete_event(struct ath6kl_vif *vif, bool aborted)
+ 	}
+ 
+ out:
+-	cfg80211_scan_done(vif->scan_req, aborted);
+-	vif->scan_req = NULL;
++	cfg80211_scan_done(request, aborted);
+ }
+ 
+ void ath6kl_cfg80211_ch_switch_notify(struct ath6kl_vif *vif, int freq,
+@@ -3589,6 +3607,7 @@ static int ath6kl_cfg80211_vif_init(struct ath6kl_vif *vif)
+ void ath6kl_cfg80211_vif_stop(struct ath6kl_vif *vif, bool wmi_ready)
+ {
+ 	static u8 bcast_mac[] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
++	struct cfg80211_scan_request *scan_req;
+ 	bool discon_issued;
+ 
+ 	netif_stop_queue(vif->ndev);
+@@ -3608,9 +3627,13 @@ void ath6kl_cfg80211_vif_stop(struct ath6kl_vif *vif, bool wmi_ready)
+ 						0, NULL, 0);
+ 	}
+ 
+-	if (vif->scan_req) {
+-		cfg80211_scan_done(vif->scan_req, true);
+-		vif->scan_req = NULL;
++	spin_lock_bh(&vif->if_lock);
++	scan_req = vif->scan_req;
++	vif->scan_req = NULL;
++	spin_unlock_bh(&vif->if_lock);
++
++	if (scan_req) {
++		cfg80211_scan_done(scan_req, true);
+ 	}
+ 
+ 	/* need to clean up enhanced bmiss detection fw state */
+diff --git a/drivers/net/wireless/ath/ath6kl/wmi.c b/drivers/net/wireless/ath/ath6kl/wmi.c
+index 71358a1..04edeaf 100644
+--- a/drivers/net/wireless/ath/ath6kl/wmi.c
++++ b/drivers/net/wireless/ath/ath6kl/wmi.c
+@@ -574,6 +574,8 @@ static int ath6kl_wmi_tx_status_event_rx(struct wmi *wmi, u8 *datap, int len,
+ 					 struct ath6kl_vif *vif)
+ {
+ 	struct wmi_tx_status_event *ev;
++	u8 *last_mgmt_tx_frame = NULL;
++	size_t last_mgmt_tx_frame_len = 0;
+ 	u32 id;
+ 
+ 	if (len < sizeof(*ev))
+@@ -583,14 +585,20 @@ static int ath6kl_wmi_tx_status_event_rx(struct wmi *wmi, u8 *datap, int len,
+ 	id = le32_to_cpu(ev->id);
+ 	ath6kl_dbg(ATH6KL_DBG_WMI, "tx_status: id=%x ack_status=%u\n",
+ 		   id, ev->ack_status);
+-	if (wmi->last_mgmt_tx_frame) {
++
++	spin_lock_bh(&wmi->lock);
++	last_mgmt_tx_frame = wmi->last_mgmt_tx_frame;
++	last_mgmt_tx_frame_len = wmi->last_mgmt_tx_frame_len;
++	wmi->last_mgmt_tx_frame = NULL;
++	wmi->last_mgmt_tx_frame_len = 0;
++	spin_unlock_bh(&wmi->lock);
++
++	if (last_mgmt_tx_frame) {
+ 		cfg80211_mgmt_tx_status(&vif->wdev, id,
+-					wmi->last_mgmt_tx_frame,
+-					wmi->last_mgmt_tx_frame_len,
++					last_mgmt_tx_frame,
++					last_mgmt_tx_frame_len,
+ 					!!ev->ack_status, GFP_ATOMIC);
+-		kfree(wmi->last_mgmt_tx_frame);
+-		wmi->last_mgmt_tx_frame = NULL;
+-		wmi->last_mgmt_tx_frame_len = 0;
++		kfree(last_mgmt_tx_frame);
+ 	}
+ 
+ 	return 0;
+@@ -741,6 +749,7 @@ static int ath6kl_wmi_simple_cmd(struct wmi *wmi, u8 if_idx,
+ static int ath6kl_wmi_ready_event_rx(struct wmi *wmi, u8 *datap, int len)
+ {
+ 	struct wmi_ready_event_2 *ev = (struct wmi_ready_event_2 *) datap;
++	struct ath6kl *ar = wmi->parent_dev;
+ 
+ 	if (len < sizeof(struct wmi_ready_event_2))
+ 		return -EINVAL;
+@@ -792,6 +801,7 @@ int ath6kl_wmi_force_roam_cmd(struct wmi *wmi, const u8 *bssid)
+ 		return -ENOMEM;
+ 
+ 	cmd = (struct roam_ctrl_cmd *) skb->data;
++	memset(cmd, 0, sizeof(*cmd));
+ 
+ 	memcpy(cmd->info.bssid, bssid, ETH_ALEN);
+ 	cmd->roam_ctrl = WMI_FORCE_ROAM;
+@@ -844,6 +854,7 @@ int ath6kl_wmi_set_roam_mode_cmd(struct wmi *wmi, enum wmi_roam_mode mode)
+ 		return -ENOMEM;
+ 
+ 	cmd = (struct roam_ctrl_cmd *) skb->data;
++	memset(cmd, 0, sizeof(*cmd));
+ 
+ 	cmd->info.roam_mode = mode;
+ 	cmd->roam_ctrl = WMI_SET_ROAM_MODE;
+@@ -1120,6 +1131,7 @@ static int ath6kl_wmi_bssinfo_event_rx(struct wmi *wmi, u8 *datap, int len,
+ 	u8 *buf;
+ 	struct ieee80211_channel *channel;
+ 	struct ath6kl *ar = wmi->parent_dev;
++	struct ieee80211_mgmt *mgmt;
+ 	struct cfg80211_bss *bss;
+ 
+ 	if (len <= sizeof(struct wmi_bss_info_hdr2))
+@@ -1165,15 +1177,39 @@ static int ath6kl_wmi_bssinfo_event_rx(struct wmi *wmi, u8 *datap, int len,
+ 		}
+ 	}
+ 
+-	bss = cfg80211_inform_bss(ar->wiphy, channel,
+-				  bih->frame_type == BEACON_FTYPE ?
+-					CFG80211_BSS_FTYPE_BEACON :
+-					CFG80211_BSS_FTYPE_PRESP,
+-				  bih->bssid, get_unaligned_le64((__le64 *)buf),
+-				  get_unaligned_le16(((__le16 *)buf) + 5),
+-				  get_unaligned_le16(((__le16 *)buf) + 4),
+-				  buf + 8 + 2 + 2, len - 8 - 2 - 2,
+-				  (bih->snr - 95) * 100, GFP_ATOMIC);
++	/*
++	 * In theory, use of cfg80211_inform_bss() would be more natural here
++	 * since we do not have the full frame. However, at least for now,
++	 * cfg80211 can only distinguish Beacon and Probe Response frames from
++	 * each other when using cfg80211_inform_bss_frame(), so let's build a
++	 * fake IEEE 802.11 header to be able to take benefit of this.
++	 */
++	mgmt = kmalloc(24 + len, GFP_ATOMIC);
++	if (mgmt == NULL)
++		return -EINVAL;
++
++	if (bih->frame_type == BEACON_FTYPE) {
++		mgmt->frame_control = cpu_to_le16(IEEE80211_FTYPE_MGMT |
++						  IEEE80211_STYPE_BEACON);
++		memset(mgmt->da, 0xff, ETH_ALEN);
++	} else {
++		struct net_device *dev = vif->ndev;
++
++		mgmt->frame_control = cpu_to_le16(IEEE80211_FTYPE_MGMT |
++						  IEEE80211_STYPE_PROBE_RESP);
++		memcpy(mgmt->da, dev->dev_addr, ETH_ALEN);
++	}
++	mgmt->duration = cpu_to_le16(0);
++	memcpy(mgmt->sa, bih->bssid, ETH_ALEN);
++	memcpy(mgmt->bssid, bih->bssid, ETH_ALEN);
++	mgmt->seq_ctrl = cpu_to_le16(0);
++
++	memcpy(&mgmt->u.beacon, buf, len);
++
++	bss = cfg80211_inform_bss_frame(ar->wiphy, channel, mgmt,
++					24 + len, (bih->snr - 95) * 100,
++					GFP_ATOMIC);
++	kfree(mgmt);
+ 	if (bss == NULL)
+ 		return -ENOMEM;
+ 	cfg80211_put_bss(ar->wiphy, bss);
+@@ -3680,10 +3716,13 @@ static int ath6kl_wmi_send_action_cmd(struct wmi *wmi, u8 if_idx, u32 id,
+ 		return -ENOMEM;
+ 	}
+ 
+-	kfree(wmi->last_mgmt_tx_frame);
+ 	memcpy(buf, data, data_len);
++
++	spin_lock_bh(&wmi->lock);
++	kfree(wmi->last_mgmt_tx_frame);
+ 	wmi->last_mgmt_tx_frame = buf;
+ 	wmi->last_mgmt_tx_frame_len = data_len;
++	spin_unlock_bh(&wmi->lock);
+ 
+ 	ath6kl_dbg(ATH6KL_DBG_WMI,
+ 		   "send_action_cmd: id=%u freq=%u wait=%u len=%u\n",
+@@ -3719,10 +3758,13 @@ static int __ath6kl_wmi_send_mgmt_cmd(struct wmi *wmi, u8 if_idx, u32 id,
+ 		return -ENOMEM;
+ 	}
+ 
+-	kfree(wmi->last_mgmt_tx_frame);
+ 	memcpy(buf, data, data_len);
++
++	spin_lock_bh(&wmi->lock);
++	kfree(wmi->last_mgmt_tx_frame);
+ 	wmi->last_mgmt_tx_frame = buf;
+ 	wmi->last_mgmt_tx_frame_len = data_len;
++	spin_unlock_bh(&wmi->lock);
+ 
+ 	ath6kl_dbg(ATH6KL_DBG_WMI,
+ 		   "send_action_cmd: id=%u freq=%u wait=%u len=%u\n",
+@@ -4198,6 +4240,10 @@ void ath6kl_wmi_shutdown(struct wmi *wmi)
+ 	if (!wmi)
+ 		return;
+ 
++	spin_lock_bh(&wmi->lock);
+ 	kfree(wmi->last_mgmt_tx_frame);
++	wmi->last_mgmt_tx_frame = NULL;
++	spin_unlock_bh(&wmi->lock);
++
+ 	kfree(wmi);
+ }
+-- 
+1.9.1
+
