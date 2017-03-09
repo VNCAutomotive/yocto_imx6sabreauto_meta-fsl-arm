@@ -1,0 +1,28 @@
+From 8e8699711a3164e28944c1219b7afd572f309b63 Mon Sep 17 00:00:00 2001
+From: Yun Jiang <Yun.Jiang@realvnc.com>
+Date: Mon, 30 Jan 2017 19:20:28 +0000
+Subject: [PATCH 3/4] Enable USB HNP protocol
+
+---
+ arch/arm/boot/dts/imx6qdl-sabreauto.dtsi | 5 ++---
+ 1 file changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/arch/arm/boot/dts/imx6qdl-sabreauto.dtsi b/arch/arm/boot/dts/imx6qdl-sabreauto.dtsi
+index 3ca8303..ee86cce 100644
+--- a/arch/arm/boot/dts/imx6qdl-sabreauto.dtsi
++++ b/arch/arm/boot/dts/imx6qdl-sabreauto.dtsi
+@@ -958,9 +958,8 @@
+ 	vbus-supply = <&reg_usb_otg_vbus>;
+ 	pinctrl-names = "default";
+ 	pinctrl-0 = <&pinctrl_usbotg>;
+-	srp-disable;
+-	hnp-disable;
+-	adp-disable;
++    dr_mode = "otg";
++    otg-rev = <0x0200>;
+ 	status = "okay";
+ };
+ 
+-- 
+1.9.1
+
