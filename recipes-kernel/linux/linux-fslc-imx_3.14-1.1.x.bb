@@ -12,7 +12,6 @@ PV .= "+git${SRCPV}"
 
 SRC_URI += "file://0001-Enable-support-for-AR6003-firmware-hw2.1.1-3.4.patch \
             file://0002-Fix-crash-issue-during-WiFi-P2P-scan.patch \
-            file://0003-Enable-USB-HNP-protocol.patch \
             file://0004-Revert-usb-hub-do-not-clear-BOS-field-during-reset-d.patch"
 
 SRCBRANCH = "3.14-1.1.x-imx"
