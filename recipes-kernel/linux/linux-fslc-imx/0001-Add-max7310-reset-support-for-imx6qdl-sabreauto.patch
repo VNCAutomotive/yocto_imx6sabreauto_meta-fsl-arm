@@ -1,0 +1,47 @@
+From d06a26eec925b8927596281485630b36b7c33392 Mon Sep 17 00:00:00 2001
+From: Yun Jiang <Yun.Jiang@realvnc.com>
+Date: Mon, 3 Oct 2016 13:47:46 +0100
+Subject: [PATCH 1/5] Add max7310 reset support for imx6qdl-sabreauto.
+
+Without this change, all devices connected to I2C3 will not work.
+---
+ arch/arm/boot/dts/imx6qdl-sabreauto.dtsi | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/arch/arm/boot/dts/imx6qdl-sabreauto.dtsi b/arch/arm/boot/dts/imx6qdl-sabreauto.dtsi
+index 511f133..936c020 100644
+--- a/arch/arm/boot/dts/imx6qdl-sabreauto.dtsi
++++ b/arch/arm/boot/dts/imx6qdl-sabreauto.dtsi
+@@ -62,6 +62,13 @@
+ 		};
+ 	};
+ 
++	max7310_reset: max7310-reset {
++		compatible = "gpio-reset";
++		reset-gpios = <&gpio1 15 GPIO_ACTIVE_LOW>;
++		reset-delay-us = <1>;
++		#reset-cells = <0>;
++	};
++
+ 	memory:	memory {
+ 		reg = <0x10000000 0x80000000>;
+ 	};
+@@ -556,6 +563,7 @@
+ &i2c3 {
+ 	pinctrl-names = "default";
+ 	pinctrl-0 = <&pinctrl_i2c3>;
++	pinctrl-assert-gpios = <&gpio5 4 GPIO_ACTIVE_HIGH>;
+ 	status = "okay";
+ 
+ 	adv7180: adv7180@21 {
+@@ -589,6 +597,7 @@
+ 		reg = <0x30>;
+ 		gpio-controller;
+ 		#gpio-cells = <2>;
++		resets = <&max7310_reset>;
+ 	};
+ 
+ 	max7310_b: gpio@32 {
+-- 
+1.9.1
+

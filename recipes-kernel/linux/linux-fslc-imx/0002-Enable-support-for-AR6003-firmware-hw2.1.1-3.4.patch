@@ -1,0 +1,529 @@
+From ea9f8e1466f24687cb8ab2e007567d64e545c98f Mon Sep 17 00:00:00 2001
+From: Yun Jiang <Yun.Jiang@realvnc.com>
+Date: Mon, 17 Oct 2016 14:48:19 +0100
+Subject: [PATCH 2/5] Enable support for AR6003 firmware hw2.1.1 3.4
+
+---
+ drivers/net/wireless/ath/ath6kl/cfg80211.c |  14 ++-
+ drivers/net/wireless/ath/ath6kl/cfg80211.h |   4 +-
+ drivers/net/wireless/ath/ath6kl/core.h     |  28 +++++-
+ drivers/net/wireless/ath/ath6kl/init.c     |  43 +++++++++-
+ drivers/net/wireless/ath/ath6kl/main.c     |   6 +-
+ drivers/net/wireless/ath/ath6kl/usb.c      |   6 +-
+ drivers/net/wireless/ath/ath6kl/wmi.c      | 131 ++++++++++++++++++-----------
+ drivers/net/wireless/ath/ath6kl/wmi.h      |  59 +++++++------
+ 8 files changed, 204 insertions(+), 87 deletions(-)
+
+diff --git a/drivers/net/wireless/ath/ath6kl/cfg80211.c b/drivers/net/wireless/ath/ath6kl/cfg80211.c
+index cce4625..f60fc32 100644
+--- a/drivers/net/wireless/ath/ath6kl/cfg80211.c
++++ b/drivers/net/wireless/ath/ath6kl/cfg80211.c
+@@ -737,8 +737,8 @@ void ath6kl_cfg80211_connect_event(struct ath6kl_vif *vif, u16 channel,
+ 				   u8 *bssid, u16 listen_intvl,
+ 				   u16 beacon_intvl,
+ 				   enum network_type nw_type,
+-				   u8 beacon_ie_len, u8 assoc_req_len,
+-				   u8 assoc_resp_len, u8 *assoc_info)
++				   u16 beacon_ie_len, u16 assoc_req_len,
++				   u16 assoc_resp_len, u8 *assoc_info)
+ {
+ 	struct ieee80211_channel *chan;
+ 	struct ath6kl *ar = vif->ar;
+@@ -2903,7 +2903,8 @@ static int ath6kl_start_ap(struct wiphy *wiphy, struct net_device *dev,
+ 	if (info->inactivity_timeout) {
+ 		inactivity_timeout = info->inactivity_timeout;
+ 
+-		if (test_bit(ATH6KL_FW_CAPABILITY_AP_INACTIVITY_MINS,
++		if ((ar->target_type != TARGET_TYPE_AR6003 || ar->fw_api < 4) &&
++        test_bit(ATH6KL_FW_CAPABILITY_AP_INACTIVITY_MINS,
+ 			     ar->fw_capabilities))
+ 			inactivity_timeout = DIV_ROUND_UP(inactivity_timeout,
+ 							  60);
+@@ -3539,6 +3540,10 @@ static void ath6kl_cfg80211_reg_notify(struct wiphy *wiphy,
+ 		return;
+ 	}
+ 
++	if (ar->target_type == TARGET_TYPE_AR6003 && ar->fw_api == 4 &&
++      test_bit(ATH6KL_FW_CAPABILITY_REGDOMAIN_V2, ar->fw_capabilities))
++		return;
++
+ 	/*
+ 	 * Firmware will apply the regdomain change only after a scan is
+ 	 * issued and it will send a WMI_REGDOMAIN_EVENTID when it has been
+@@ -3788,7 +3793,8 @@ int ath6kl_cfg80211_init(struct ath6kl *ar)
+ 		ath6kl_band_5ghz.ht_cap.ht_supported = false;
+ 	}
+ 
+-	if (test_bit(ATH6KL_FW_CAPABILITY_64BIT_RATES,
++	if ((ar->target_type != TARGET_TYPE_AR6003 || ar->fw_api < 4) &&
++       test_bit(ATH6KL_FW_CAPABILITY_64BIT_RATES,
+ 		     ar->fw_capabilities)) {
+ 		ath6kl_band_2ghz.ht_cap.mcs.rx_mask[0] = 0xff;
+ 		ath6kl_band_5ghz.ht_cap.mcs.rx_mask[0] = 0xff;
+diff --git a/drivers/net/wireless/ath/ath6kl/cfg80211.h b/drivers/net/wireless/ath/ath6kl/cfg80211.h
+index 5aa57a7..db9f746 100644
+--- a/drivers/net/wireless/ath/ath6kl/cfg80211.h
++++ b/drivers/net/wireless/ath/ath6kl/cfg80211.h
+@@ -36,8 +36,8 @@ void ath6kl_cfg80211_connect_event(struct ath6kl_vif *vif, u16 channel,
+ 				   u8 *bssid, u16 listen_intvl,
+ 				   u16 beacon_intvl,
+ 				   enum network_type nw_type,
+-				   u8 beacon_ie_len, u8 assoc_req_len,
+-				   u8 assoc_resp_len, u8 *assoc_info);
++				   u16 beacon_ie_len, u16 assoc_req_len,
++				   u16 assoc_resp_len, u8 *assoc_info);
+ 
+ void ath6kl_cfg80211_disconnect_event(struct ath6kl_vif *vif, u8 reason,
+ 				      u8 *bssid, u8 assoc_resp_len,
+diff --git a/drivers/net/wireless/ath/ath6kl/core.h b/drivers/net/wireless/ath/ath6kl/core.h
+index 2b78c86..df6b4a5 100644
+--- a/drivers/net/wireless/ath/ath6kl/core.h
++++ b/drivers/net/wireless/ath/ath6kl/core.h
+@@ -155,6 +155,28 @@ enum ath6kl_fw_capability {
+ 	ATH6KL_FW_CAPABILITY_MAX,
+ };
+ 
++enum ath6kl_ar6003_fw4_capability {
++	/*
++	 * Firmware supports mac address based ACL with
++	 * white/black list
++	 */
++	ATH6KL_FW_CAPABILITY_MAC_ACL = 14,
++
++	/*
++	* Firmware with capability regdomain-v2 can support
++	* set regdomain immediately. The firmware without this
++	* capability need start scan for new regdomain take effect
++	*/
++	ATH6KL_FW_CAPABILITY_REGDOMAIN_V2 = 15,
++
++	/*
++	 * Firmware capable to send more than 255 byte in IE
++	 * (assoc req ie, assoc resp ie, beacon ie) present in
++	 * connect event.
++	 */
++	ATH6KL_FW_CAPABILITY_LARGE_CONNECT_IE = 16,
++};
++
+ #define ATH6KL_CAPABILITY_LEN (ALIGN(ATH6KL_FW_CAPABILITY_MAX, 32) / 32)
+ 
+ struct ath6kl_fw_ie {
+@@ -936,12 +958,12 @@ int ath6kl_control_tx(void *devt, struct sk_buff *skb,
+ void ath6kl_connect_event(struct ath6kl_vif *vif, u16 channel,
+ 			  u8 *bssid, u16 listen_int,
+ 			  u16 beacon_int, enum network_type net_type,
+-			  u8 beacon_ie_len, u8 assoc_req_len,
+-			  u8 assoc_resp_len, u8 *assoc_info);
++			  u16 beacon_ie_len, u16 assoc_req_len,
++			  u16 assoc_resp_len, u8 *assoc_info);
+ void ath6kl_connect_ap_mode_bss(struct ath6kl_vif *vif, u16 channel);
+ void ath6kl_connect_ap_mode_sta(struct ath6kl_vif *vif, u16 aid, u8 *mac_addr,
+ 				u8 keymgmt, u8 ucipher, u8 auth,
+-				u8 assoc_req_len, u8 *assoc_info, u8 apsd_info);
++				u16 assoc_req_len, u8 *assoc_info, u8 apsd_info);
+ void ath6kl_disconnect_event(struct ath6kl_vif *vif, u8 reason,
+ 			     u8 *bssid, u8 assoc_resp_len,
+ 			     u8 *assoc_info, u16 prot_reason_status);
+diff --git a/drivers/net/wireless/ath/ath6kl/init.c b/drivers/net/wireless/ath/ath6kl/init.c
+index 6e473fa..5db2fb4 100644
+--- a/drivers/net/wireless/ath/ath6kl/init.c
++++ b/drivers/net/wireless/ath/ath6kl/init.c
+@@ -1622,6 +1622,28 @@ static const struct fw_capa_str_map {
+ 	{ ATH6KL_FW_CAPABILITY_NO_IP_CHECKSUM, "no-ip-checksum" },
+ };
+ 
++struct fw_capa_str_map ar6003_fw4_capa_map[] = {
++	{ ATH6KL_FW_CAPABILITY_HOST_P2P, "host-p2p" },
++	{ ATH6KL_FW_CAPABILITY_SCHED_SCAN, "sched-scan" },
++	{ ATH6KL_FW_CAPABILITY_STA_P2PDEV_DUPLEX, "sta-p2pdev-duplex" },
++	{ ATH6KL_FW_CAPABILITY_INACTIVITY_TIMEOUT, "inactivity-timeout" },
++	{ ATH6KL_FW_CAPABILITY_RSN_CAP_OVERRIDE, "rsn-cap-override" },
++	{ ATH6KL_FW_CAPABILITY_WOW_MULTICAST_FILTER, "wow-mc-filter" },
++	{ ATH6KL_FW_CAPABILITY_BMISS_ENHANCE, "bmiss-enhance" },
++	{ ATH6KL_FW_CAPABILITY_SCHED_SCAN_MATCH_LIST, "sscan-match-list" },
++	{ ATH6KL_FW_CAPABILITY_RSSI_SCAN_THOLD, "rssi-scan-thold" },
++	{ ATH6KL_FW_CAPABILITY_CUSTOM_MAC_ADDR, "custom-mac-addr" },
++	{ ATH6KL_FW_CAPABILITY_TX_ERR_NOTIFY, "tx-err-notify" },
++	{ ATH6KL_FW_CAPABILITY_REGDOMAIN, "regdomain" },
++	{ ATH6KL_FW_CAPABILITY_SCHED_SCAN_V2, "sched-scan-v2" },
++	{ ATH6KL_FW_CAPABILITY_HEART_BEAT_POLL, "hb-poll" },
++	{ ATH6KL_FW_CAPABILITY_MAC_ACL, "mac-acl" },
++	{ ATH6KL_FW_CAPABILITY_REGDOMAIN_V2, "regdomain-v2" },
++	{ ATH6KL_FW_CAPABILITY_LARGE_CONNECT_IE, "large-connect-ie" },
++	{ ATH6KL_FW_CAPABILITY_RATETABLE_MCS15, "ratetable-mcs15" },
++	{ ATH6KL_FW_CAPABILITY_NO_IP_CHECKSUM, "no-ip-checksum" },
++};
++
+ static const char *ath6kl_init_get_fw_capa_name(unsigned int id)
+ {
+ 	int i;
+@@ -1634,6 +1656,18 @@ static const char *ath6kl_init_get_fw_capa_name(unsigned int id)
+ 	return "<unknown>";
+ }
+ 
++static const char *ath6kl_init_get_ar6003_fw4_capa_name(unsigned int id)
++{
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(ar6003_fw4_capa_map); i++) {
++		if (ar6003_fw4_capa_map[i].id == id)
++			return fw_capa_map[i].name;
++	}
++
++	return "<unknown>";
++}
++
+ static void ath6kl_init_get_fwcaps(struct ath6kl *ar, char *buf, size_t buf_len)
+ {
+ 	u8 *data = (u8 *) ar->fw_capabilities;
+@@ -1659,8 +1693,13 @@ static void ath6kl_init_get_fwcaps(struct ath6kl *ar, char *buf, size_t buf_len)
+ 		}
+ 
+ 		if (data[index] & (1 << bit)) {
+-			len += scnprintf(buf + len, buf_len - len, "%s,",
+-					    ath6kl_init_get_fw_capa_name(i));
++      if (ar->fw_api >= 4) {
++        len += scnprintf(buf + len, buf_len - len, "%s,",
++                ath6kl_init_get_ar6003_fw4_capa_name(i));
++      } else {
++        len += scnprintf(buf + len, buf_len - len, "%s,",
++                ath6kl_init_get_fw_capa_name(i));
++      }
+ 		}
+ 	}
+ 
+diff --git a/drivers/net/wireless/ath/ath6kl/main.c b/drivers/net/wireless/ath/ath6kl/main.c
+index 1af3fed..eab0e9e 100644
+--- a/drivers/net/wireless/ath/ath6kl/main.c
++++ b/drivers/net/wireless/ath/ath6kl/main.c
+@@ -422,7 +422,7 @@ void ath6kl_connect_ap_mode_bss(struct ath6kl_vif *vif, u16 channel)
+ 
+ void ath6kl_connect_ap_mode_sta(struct ath6kl_vif *vif, u16 aid, u8 *mac_addr,
+ 				u8 keymgmt, u8 ucipher, u8 auth,
+-				u8 assoc_req_len, u8 *assoc_info, u8 apsd_info)
++				u16 assoc_req_len, u8 *assoc_info, u8 apsd_info)
+ {
+ 	u8 *ies = NULL, *wpa_ie = NULL, *pos;
+ 	size_t ies_len = 0;
+@@ -621,8 +621,8 @@ static void ath6kl_check_ch_switch(struct ath6kl *ar, u16 channel)
+ 
+ void ath6kl_connect_event(struct ath6kl_vif *vif, u16 channel, u8 *bssid,
+ 			  u16 listen_int, u16 beacon_int,
+-			  enum network_type net_type, u8 beacon_ie_len,
+-			  u8 assoc_req_len, u8 assoc_resp_len,
++			  enum network_type net_type, u16 beacon_ie_len,
++			  u16 assoc_req_len, u16 assoc_resp_len,
+ 			  u8 *assoc_info)
+ {
+ 	struct ath6kl *ar = vif->ar;
+diff --git a/drivers/net/wireless/ath/ath6kl/usb.c b/drivers/net/wireless/ath/ath6kl/usb.c
+index 9da3594..544c05a 100644
+--- a/drivers/net/wireless/ath/ath6kl/usb.c
++++ b/drivers/net/wireless/ath/ath6kl/usb.c
+@@ -802,7 +802,8 @@ static int ath6kl_usb_map_service_pipe(struct ath6kl *ar, u16 svc_id,
+ 		break;
+ 	case WMI_DATA_VI_SVC:
+ 
+-		if (test_bit(ATH6KL_FW_CAPABILITY_MAP_LP_ENDPOINT,
++		if ((ar->target_type != TARGET_TYPE_AR6003 || ar->fw_api < 4) &&
++        test_bit(ATH6KL_FW_CAPABILITY_MAP_LP_ENDPOINT,
+ 			     ar->fw_capabilities))
+ 			*ul_pipe = ATH6KL_USB_PIPE_TX_DATA_LP;
+ 		else
+@@ -815,7 +816,8 @@ static int ath6kl_usb_map_service_pipe(struct ath6kl *ar, u16 svc_id,
+ 		break;
+ 	case WMI_DATA_VO_SVC:
+ 
+-		if (test_bit(ATH6KL_FW_CAPABILITY_MAP_LP_ENDPOINT,
++		if ((ar->target_type != TARGET_TYPE_AR6003 || ar->fw_api < 4) &&
++        test_bit(ATH6KL_FW_CAPABILITY_MAP_LP_ENDPOINT,
+ 			     ar->fw_capabilities))
+ 			*ul_pipe = ATH6KL_USB_PIPE_TX_DATA_LP;
+ 		else
+diff --git a/drivers/net/wireless/ath/ath6kl/wmi.c b/drivers/net/wireless/ath/ath6kl/wmi.c
+index b921005..71358a1 100644
+--- a/drivers/net/wireless/ath/ath6kl/wmi.c
++++ b/drivers/net/wireless/ath/ath6kl/wmi.c
+@@ -853,44 +853,43 @@ int ath6kl_wmi_set_roam_mode_cmd(struct wmi *wmi, enum wmi_roam_mode mode)
+ 				   NO_SYNC_WMIFLAG);
+ }
+ 
+-static int ath6kl_wmi_connect_event_rx(struct wmi *wmi, u8 *datap, int len,
+-				       struct ath6kl_vif *vif)
++static int ath6kl_wmi_connect_event(struct wmi *wmi, u8 *datap,
++				    struct ath6kl_vif *vif, u16 beacon_ie_len,
++				    u16 assoc_req_len, u16 assoc_resp_len,
++				    u8 *assoc_info)
+ {
+-	struct wmi_connect_event *ev;
++	union wmi_connect_common_info *u;
+ 	u8 *pie, *peie;
+ 
+-	if (len < sizeof(struct wmi_connect_event))
+-		return -EINVAL;
+-
+-	ev = (struct wmi_connect_event *) datap;
+-
++	u = (union wmi_connect_common_info *) datap;
+ 	if (vif->nw_type == AP_NETWORK) {
+ 		/* AP mode start/STA connected event */
+ 		struct net_device *dev = vif->ndev;
+-		if (memcmp(dev->dev_addr, ev->u.ap_bss.bssid, ETH_ALEN) == 0) {
+-			ath6kl_dbg(ATH6KL_DBG_WMI,
+-				   "%s: freq %d bssid %pM (AP started)\n",
+-				   __func__, le16_to_cpu(ev->u.ap_bss.ch),
+-				   ev->u.ap_bss.bssid);
++		if (memcmp(dev->dev_addr, u->ap_bss.bssid, ETH_ALEN) == 0) {
++			ath6kl_dbg(ATH6KL_DBG_WMI, "%s: freq %d bssid %pM "
++				   "(AP started)\n",
++				   __func__, le16_to_cpu(u->ap_bss.ch),
++				   u->ap_bss.bssid);
+ 			ath6kl_connect_ap_mode_bss(
+-				vif, le16_to_cpu(ev->u.ap_bss.ch));
++				vif, le16_to_cpu(u->ap_bss.ch));
+ 		} else {
+-			ath6kl_dbg(ATH6KL_DBG_WMI,
+-				   "%s: aid %u mac_addr %pM auth=%u keymgmt=%u cipher=%u apsd_info=%u (STA connected)\n",
+-				   __func__, ev->u.ap_sta.aid,
+-				   ev->u.ap_sta.mac_addr,
+-				   ev->u.ap_sta.auth,
+-				   ev->u.ap_sta.keymgmt,
+-				   le16_to_cpu(ev->u.ap_sta.cipher),
+-				   ev->u.ap_sta.apsd_info);
++			ath6kl_dbg(ATH6KL_DBG_WMI, "%s: aid %u mac_addr %pM "
++				   "auth=%u keymgmt=%u cipher=%u apsd_info=%u "
++				   "(STA connected)\n",
++				   __func__, u->ap_sta.aid,
++				   u->ap_sta.mac_addr,
++				   u->ap_sta.auth,
++				   u->ap_sta.keymgmt,
++				   le16_to_cpu(u->ap_sta.cipher),
++				   u->ap_sta.apsd_info);
+ 
+ 			ath6kl_connect_ap_mode_sta(
+-				vif, ev->u.ap_sta.aid, ev->u.ap_sta.mac_addr,
+-				ev->u.ap_sta.keymgmt,
+-				le16_to_cpu(ev->u.ap_sta.cipher),
+-				ev->u.ap_sta.auth, ev->assoc_req_len,
+-				ev->assoc_info + ev->beacon_ie_len,
+-				ev->u.ap_sta.apsd_info);
++				vif, u->ap_sta.aid, u->ap_sta.mac_addr,
++				u->ap_sta.keymgmt,
++				le16_to_cpu(u->ap_sta.cipher),
++				u->ap_sta.auth, assoc_req_len,
++				assoc_info + beacon_ie_len,
++				u->ap_sta.apsd_info);
+ 		}
+ 		return 0;
+ 	}
+@@ -899,18 +898,17 @@ static int ath6kl_wmi_connect_event_rx(struct wmi *wmi, u8 *datap, int len,
+ 
+ 	ath6kl_dbg(ATH6KL_DBG_WMI,
+ 		   "wmi event connect freq %d bssid %pM listen_intvl %d beacon_intvl %d type %d\n",
+-		   le16_to_cpu(ev->u.sta.ch), ev->u.sta.bssid,
+-		   le16_to_cpu(ev->u.sta.listen_intvl),
+-		   le16_to_cpu(ev->u.sta.beacon_intvl),
+-		   le32_to_cpu(ev->u.sta.nw_type));
++		   le16_to_cpu(u->sta.ch), u->sta.bssid,
++		   le16_to_cpu(u->sta.listen_intvl),
++		   le16_to_cpu(u->sta.beacon_intvl),
++		   le32_to_cpu(u->sta.nw_type));
+ 
+ 	/* Start of assoc rsp IEs */
+-	pie = ev->assoc_info + ev->beacon_ie_len +
+-	      ev->assoc_req_len + (sizeof(u16) * 3); /* capinfo, status, aid */
++	pie = assoc_info + beacon_ie_len +
++	      assoc_req_len + (sizeof(u16) * 3); /* capinfo, status, aid */
+ 
+ 	/* End of assoc rsp IEs */
+-	peie = ev->assoc_info + ev->beacon_ie_len + ev->assoc_req_len +
+-	    ev->assoc_resp_len;
++	peie = assoc_info + beacon_ie_len + assoc_req_len + assoc_resp_len;
+ 
+ 	while (pie < peie) {
+ 		switch (*pie) {
+@@ -918,8 +916,8 @@ static int ath6kl_wmi_connect_event_rx(struct wmi *wmi, u8 *datap, int len,
+ 			if (pie[1] > 3 && pie[2] == 0x00 && pie[3] == 0x50 &&
+ 			    pie[4] == 0xf2 && pie[5] == WMM_OUI_TYPE) {
+ 				/* WMM OUT (00:50:F2) */
+-				if (pie[1] > 5 &&
+-				    pie[6] == WMM_PARAM_OUI_SUBTYPE)
++				if (pie[1] > 5
++				    && pie[6] == WMM_PARAM_OUI_SUBTYPE)
+ 					wmi->is_wmm_enabled = true;
+ 			}
+ 			break;
+@@ -931,17 +929,47 @@ static int ath6kl_wmi_connect_event_rx(struct wmi *wmi, u8 *datap, int len,
+ 		pie += pie[1] + 2;
+ 	}
+ 
+-	ath6kl_connect_event(vif, le16_to_cpu(ev->u.sta.ch),
+-			     ev->u.sta.bssid,
+-			     le16_to_cpu(ev->u.sta.listen_intvl),
+-			     le16_to_cpu(ev->u.sta.beacon_intvl),
+-			     le32_to_cpu(ev->u.sta.nw_type),
+-			     ev->beacon_ie_len, ev->assoc_req_len,
+-			     ev->assoc_resp_len, ev->assoc_info);
++	ath6kl_connect_event(vif, le16_to_cpu(u->sta.ch),
++			     u->sta.bssid,
++			     le16_to_cpu(u->sta.listen_intvl),
++			     le16_to_cpu(u->sta.beacon_intvl),
++			     le32_to_cpu(u->sta.nw_type),
++			     beacon_ie_len, assoc_req_len,
++			     assoc_resp_len, assoc_info);
+ 
+ 	return 0;
+ }
+ 
++static int ath6kl_wmi_connect_event_rx_advanced(struct wmi *wmi, u8 *datap,
++						int len, struct ath6kl_vif *vif)
++{
++	struct wmi_connect_event_advanced *ev;
++
++	if (len < sizeof(struct wmi_connect_event_advanced))
++		return -EINVAL;
++
++	ev = (struct wmi_connect_event_advanced *) datap;
++
++	return ath6kl_wmi_connect_event(wmi, datap, vif, ev->beacon_ie_len,
++					ev->assoc_req_len, ev->assoc_resp_len,
++					ev->assoc_info);
++}
++
++static int ath6kl_wmi_connect_event_rx(struct wmi *wmi, u8 *datap, int len,
++				       struct ath6kl_vif *vif)
++{
++	struct wmi_connect_event *ev;
++
++	if (len < sizeof(struct wmi_connect_event))
++		return -EINVAL;
++
++	ev = (struct wmi_connect_event *) datap;
++
++  return ath6kl_wmi_connect_event(wmi, datap, vif, ev->beacon_ie_len,
++        ev->assoc_req_len, ev->assoc_resp_len,
++        ev->assoc_info);
++}
++
+ static struct country_code_to_enum_rd *
+ ath6kl_regd_find_country(u16 countryCode)
+ {
+@@ -2861,7 +2889,8 @@ int ath6kl_wmi_set_bitrate_mask(struct wmi *wmi, u8 if_idx,
+ {
+ 	struct ath6kl *ar = wmi->parent_dev;
+ 
+-	if (test_bit(ATH6KL_FW_CAPABILITY_64BIT_RATES,
++	if ((ar->target_type != TARGET_TYPE_AR6003 || ar->fw_api < 4) &&
++      test_bit(ATH6KL_FW_CAPABILITY_64BIT_RATES,
+ 		     ar->fw_capabilities))
+ 		return ath6kl_set_bitrate_mask64(wmi, if_idx, mask);
+ 	else
+@@ -3883,6 +3912,7 @@ static int ath6kl_wmi_proc_events_vif(struct wmi *wmi, u16 if_idx, u16 cmd_id,
+ 					u8 *datap, u32 len)
+ {
+ 	struct ath6kl_vif *vif;
++	struct ath6kl *ar;
+ 
+ 	vif = ath6kl_get_vif_by_index(wmi->parent_dev, if_idx);
+ 	if (!vif) {
+@@ -3891,11 +3921,18 @@ static int ath6kl_wmi_proc_events_vif(struct wmi *wmi, u16 if_idx, u16 cmd_id,
+ 			    if_idx);
+ 		return -EINVAL;
+ 	}
++  ar = vif->ar;
+ 
+ 	switch (cmd_id) {
+ 	case WMI_CONNECT_EVENTID:
+ 		ath6kl_dbg(ATH6KL_DBG_WMI, "WMI_CONNECT_EVENTID\n");
+-		return ath6kl_wmi_connect_event_rx(wmi, datap, len, vif);
++	  if (ar->target_type == TARGET_TYPE_AR6003 && ar->fw_api == 4 &&
++        test_bit(ATH6KL_FW_CAPABILITY_LARGE_CONNECT_IE,
++			     ar->fw_capabilities))
++			return ath6kl_wmi_connect_event_rx_advanced(wmi, datap,
++								   len, vif);
++    else
++      return ath6kl_wmi_connect_event_rx(wmi, datap, len, vif);
+ 	case WMI_DISCONNECT_EVENTID:
+ 		ath6kl_dbg(ATH6KL_DBG_WMI, "WMI_DISCONNECT_EVENTID\n");
+ 		return ath6kl_wmi_disconnect_event_rx(wmi, datap, len, vif);
+diff --git a/drivers/net/wireless/ath/ath6kl/wmi.h b/drivers/net/wireless/ath/ath6kl/wmi.h
+index 19f88b4..6d4cfff 100644
+--- a/drivers/net/wireless/ath/ath6kl/wmi.h
++++ b/drivers/net/wireless/ath/ath6kl/wmi.h
+@@ -1516,38 +1516,49 @@ enum wmi_phy_cap {
+ 	WMI_11AGN_CAP = 0x06,
+ };
+ 
++union wmi_connect_common_info {
++  struct {
++    __le16 ch;
++    u8 bssid[ETH_ALEN];
++    __le16 listen_intvl;
++    __le16 beacon_intvl;
++    __le32 nw_type;
++  } sta;
++  struct {
++    u8 phymode;
++    u8 aid;
++    u8 mac_addr[ETH_ALEN];
++    u8 auth;
++    u8 keymgmt;
++    __le16 cipher;
++    u8 apsd_info;
++    u8 unused[3];
++  } ap_sta;
++  struct {
++    __le16 ch;
++    u8 bssid[ETH_ALEN];
++    u8 unused[8];
++  } ap_bss;
++} __packed;
++
+ /* Connect Event */
+ struct wmi_connect_event {
+-	union {
+-		struct {
+-			__le16 ch;
+-			u8 bssid[ETH_ALEN];
+-			__le16 listen_intvl;
+-			__le16 beacon_intvl;
+-			__le32 nw_type;
+-		} sta;
+-		struct {
+-			u8 phymode;
+-			u8 aid;
+-			u8 mac_addr[ETH_ALEN];
+-			u8 auth;
+-			u8 keymgmt;
+-			__le16 cipher;
+-			u8 apsd_info;
+-			u8 unused[3];
+-		} ap_sta;
+-		struct {
+-			__le16 ch;
+-			u8 bssid[ETH_ALEN];
+-			u8 unused[8];
+-		} ap_bss;
+-	} u;
++	union wmi_connect_common_info u;
+ 	u8 beacon_ie_len;
+ 	u8 assoc_req_len;
+ 	u8 assoc_resp_len;
+ 	u8 assoc_info[1];
+ } __packed;
+ 
++/* Connect Event for large IE*/
++struct wmi_connect_event_advanced {
++	union wmi_connect_common_info u;
++	u16 beacon_ie_len;
++	u16 assoc_req_len;
++	u16 assoc_resp_len;
++	u8 assoc_info[1];
++} __packed;
++
+ /* Disconnect Event */
+ enum wmi_disconnect_reason {
+ 	NO_NETWORK_AVAIL = 0x01,
+-- 
+1.9.1
+

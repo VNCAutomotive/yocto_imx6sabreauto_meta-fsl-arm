@@ -1,0 +1,35 @@
+From a97525d738ae918cd6073ed8a8555938368be471 Mon Sep 17 00:00:00 2001
+From: Yun Jiang <Yun.Jiang@realvnc.com>
+Date: Mon, 17 Oct 2016 16:22:01 +0100
+Subject: [PATCH 3/5] Enable ar6k_clock module parameter
+
+---
+ drivers/net/wireless/ath/ath6kl/init.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/drivers/net/wireless/ath/ath6kl/init.c b/drivers/net/wireless/ath/ath6kl/init.c
+index 5db2fb4..e7b7627 100644
+--- a/drivers/net/wireless/ath/ath6kl/init.c
++++ b/drivers/net/wireless/ath/ath6kl/init.c
+@@ -32,6 +32,9 @@
+ #include "hif-ops.h"
+ #include "htc-ops.h"
+ 
++static unsigned int ar6k_clock = 19200000;
++module_param(ar6k_clock, uint, 0644);
++
+ static const struct ath6kl_hw hw_list[] = {
+ 	{
+ 		.id				= AR6003_HW_2_0_VERSION,
+@@ -1510,6 +1513,8 @@ static int ath6kl_init_upload(struct ath6kl *ar)
+ 			return status;
+ 	}
+ 
++	ath6kl_bmi_reg_write(ar, 0x540678, ar6k_clock);
++
+ 	/* write EEPROM data to Target RAM */
+ 	status = ath6kl_upload_board_file(ar);
+ 	if (status)
+-- 
+1.9.1
+
