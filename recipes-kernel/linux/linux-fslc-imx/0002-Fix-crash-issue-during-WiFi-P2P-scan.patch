@@ -1,5 +1,5 @@
 From 6d687e209a43e1a04f7625c0b05dd9705e048f5e Mon Sep 17 00:00:00 2001
-From: Yun Jiang <Yun.Jiang@realvnc.com>
+From: Yun Jiang <Yun.Jiang@vncautomotive.com>
 Date: Fri, 4 Nov 2016 13:52:51 +0000
 Subject: [PATCH 2/4] Fix crash issue during WiFi P2P scan.
 

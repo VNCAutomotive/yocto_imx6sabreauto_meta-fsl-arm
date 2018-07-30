@@ -1,5 +1,5 @@
 From a97525d738ae918cd6073ed8a8555938368be471 Mon Sep 17 00:00:00 2001
-From: Yun Jiang <Yun.Jiang@realvnc.com>
+From: Yun Jiang <Yun.Jiang@vncautomotive.com>
 Date: Mon, 17 Oct 2016 16:22:01 +0100
 Subject: [PATCH 3/5] Enable ar6k_clock module parameter
 

@@ -1,5 +1,5 @@
 From 6adaef2f223035c573151cc40c1baac726051446 Mon Sep 17 00:00:00 2001
-From: Yun Jiang <Yun.Jiang@realvnc.com>
+From: Yun Jiang <Yun.Jiang@vncautomotive.com>
 Date: Tue, 15 May 2018 09:10:27 +0100
 Subject: [PATCH] Set ethernet MTU to the USB maximum datagram size in cdc_ncm
  module by default.
