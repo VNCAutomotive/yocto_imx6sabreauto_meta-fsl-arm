@@ -1,5 +1,5 @@
 From d06a26eec925b8927596281485630b36b7c33392 Mon Sep 17 00:00:00 2001
-From: Yun Jiang <Yun.Jiang@realvnc.com>
+From: Yun Jiang <Yun.Jiang@vncautomotive.com>
 Date: Mon, 3 Oct 2016 13:47:46 +0100
 Subject: [PATCH 1/5] Add max7310 reset support for imx6qdl-sabreauto.
 
