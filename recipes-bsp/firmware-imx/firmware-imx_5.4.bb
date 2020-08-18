@@ -7,6 +7,6 @@ SRC_URI[md5sum] = "dae846ca2fc4504067f725f501491adf"
 SRC_URI[sha256sum] = "c5bd4bff48cce9715a5d6d2c190ff3cd2262c7196f7facb9b0eda231c92cc223"
 
 #BRCM firmware git
-SRCREV = "951c1363abe95dd75ab3e9447f640d7807240236"
+SRCREV = "6beb28fb947f9c6fcf7fa46c708a3e1d05370955"
 
 COMPATIBLE_MACHINE = "(mx5|mx6|mx6ul|mx7)"
